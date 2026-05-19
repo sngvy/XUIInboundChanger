@@ -85,32 +85,37 @@ IS_NEW_BUSY=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM inbounds WHERE id = $NEW_
 if [ "$IS_NEW_BUSY" -gt 0 ]; then
     echo -e "${B_YELLOW}Новый ID $NEW_ID занят. Сдвигаем последующие инбаунды на +1...${NC}"
     
-    # Полная пересборка таблицы во временную структуру с математическим сдвигом на уровне генерации данных
+    # Безопасная пересборка таблицы динамическим методом
     sqlite3 "$DB_PATH" <<EOF
 BEGIN TRANSACTION;
--- 1. Создаем точную копию структуры таблицы inbounds
-CREATE TABLE inbounds_new AS SELECT * FROM inbounds WHERE 1=0;
-
--- 2. Заливаем туда данные, высчитывая новые ID на лету
-INSERT INTO inbounds_new (id, user_id, up, down, total, remark, enable, expiry_time, listen, port, protocol, settings, stream_settings, tag, snifffing)
+-- 1. Копируем всё во временную таблицу, вычисляя новый ID «на лету»
+CREATE TABLE temp_inbounds AS 
 SELECT 
     CASE 
         WHEN id = $OLD_ID THEN $NEW_ID
         WHEN id >= $NEW_ID AND id < $OLD_ID THEN id + 1
         WHEN id >= $NEW_ID AND $OLD_ID < $NEW_ID THEN id + 1
         ELSE id 
-    END,
-    user_id, up, down, total, remark, enable, expiry_time, listen, port, protocol, settings, stream_settings, tag, snifffing
+    END AS new_id,
+    * 
 FROM inbounds;
 
--- 3. Подменяем старую таблицу новой
-DROP TABLE inbounds;
-ALTER TABLE inbounds_new RENAME TO inbounds;
+-- 2. Очищаем оригинальную таблицу
+DELETE FROM inbounds;
+
+# Удаляем временную колонку со старым id, чтобы структура совпала идеально
+ALTER TABLE temp_inbounds DROP COLUMN id;
+
+-- 3. Возвращаем измененные данные назад в оригинальную таблицу
+INSERT INTO inbounds SELECT * FROM temp_inbounds;
+
+-- 4. Удаляем временный черновик
+DROP TABLE temp_inbounds;
 COMMIT;
 EOF
 else
     echo -e "${B_YELLOW}Выполнение SQL-запроса...${NC}"
-    # Обновляем ID конкретного инбаунда, если место свободно
+    # Обновляем ID конкретного инбаунда
     sqlite3 "$DB_PATH" "UPDATE inbounds SET id = $NEW_ID WHERE id = $OLD_ID;"
 fi
 
